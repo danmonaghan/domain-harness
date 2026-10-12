@@ -37,6 +37,20 @@ def fresh(age, limit):
             and math.isfinite(age) and 0 <= age <= limit)
 
 
+def point_in_frame(point, source, target, transform):
+    """Explicitly route a point through the last known robot/Home relationship."""
+    point=vector(point)
+    if not source or not target: raise ValueError('missing coordinate frame')
+    if source==target: return point
+    native,home=transform['from_frame_id'],transform['to_frame_id']
+    if source==home and target==native: return inverse_point(transform,point)
+    if source==native and target==home:
+        w,x,y,z=vector(transform['rotation_wxyz'],4)
+        inverse=dict(rotation_wxyz=[w,-x,-y,-z],translation=inverse_point(transform,[0,0,0]))
+        return inverse_point(inverse,point)
+    raise ValueError('unknown coordinate frame')
+
+
 def select_target(scene, presence, hands, *, scene_age_ms, presence_age_ms,
                   arm_age_ms, robot_pose_age_ms, expected_home_frame, max_phone_age_ms=500):
     """Nearest fresh phone to robot origin, then nearest measured hand to phone.
@@ -66,7 +80,7 @@ def select_target(scene, presence, hands, *, scene_age_ms, presence_age_ms,
                 and product['product_id'] == 'robot-to-scene-transform'
                 and alignment['source_frame']['id'] == native
                 and alignment['target_frame']['id'] == expected_home_frame
-                and presence['frame'] == expected_home_frame
+                and presence['frame'] in (expected_home_frame,native)
                 and alignment['transform']['from_frame_id'] == native
                 and alignment['transform']['to_frame_id'] == expected_home_frame
                 and robot['frame'] == native and robot['from_frame']['frame_id'] == 'robot.base'
@@ -87,10 +101,10 @@ def select_target(scene, presence, hands, *, scene_age_ms, presence_age_ms,
                 if not (isinstance(peer, str) and peer and peer != owner
                         and clock['peer_id'] == peer and bool(clock['session_id'])
                         and pose['from_frame_id'] == 'phone-camera:'+clock['session_id']
-                        and pose['to_frame_id'] == expected_home_frame
+                        and pose['to_frame_id'] == presence['frame']
                         and fresh(phone['received_age_ms'] + presence_age_ms, max_phone_age_ms)):
                     continue
-                point = vector(inverse_point(robot_pose, inverse_point(alignment['transform'], vector(pose['translation']))))
+                point = vector(inverse_point(robot_pose, point_in_frame(pose['translation'],presence['frame'],native,alignment['transform'])))
                 distance = math.hypot(*point)
                 if not math.isfinite(distance):
                     continue

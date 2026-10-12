@@ -499,7 +499,10 @@ pub async fn run(hardware: Hardware) -> Result<()> {
                 let profile: HomeConnection = serde_json::from_slice(&std::fs::read(&home_path)?)?;
                 let value = live.lock().unwrap().snapshot();
                 let update = match value {
-                    Some(value) => crate::robot_presence::from_live(&value, if hardware == Hardware::Bracketbot { "Bracketbot 0184" } else { "Galbot" })?,
+                    Some(value) => {
+                        let name=std::env::var("SPATIAL_ROBOT_NAME").unwrap_or_else(|_|if hardware==Hardware::Bracketbot { "Bracketbot 0184".into() } else { "Galbot".into() });
+                        crate::robot_presence::from_live(&value,&name)?
+                    },
                     None => crate::robot_presence::Update { sample:None },
                 };
                 crate::mobile_pose::send_component(&running.peer,&profile,crate::robot_presence::COMPONENT,&update).await

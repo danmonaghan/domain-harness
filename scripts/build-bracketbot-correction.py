@@ -90,6 +90,9 @@ def patch_sources(source, repo):
     if '"correction_pending"' not in text:
         files[name]=once(text,'"map_correction" | "trajectory_correction"','"map_correction" | "trajectory_correction" | "correction_pending"')
     name='src/robot_runner.rs'; text=read(name)
+    old='Some(value) => crate::robot_presence::from_live(&value, if hardware == Hardware::Bracketbot { "Bracketbot 0184" } else { "Galbot" })?,'
+    if old in text:
+        text=once(text,old,'Some(value) => {\n                        let name=std::env::var("SPATIAL_ROBOT_NAME").unwrap_or_else(|_|if hardware==Hardware::Bracketbot { "Bracketbot 0184".into() } else { "Galbot".into() });\n                        crate::robot_presence::from_live(&value,&name)?\n                    },')
     if '"control_state_path"' not in text:
         text=once(text,'        "session_id":session,','        "session_id":session,\n        "control_state_path":path.with_file_name("robot-control.json"),')
     if 'SensorEvent::TrajectoryCorrection' not in text:
@@ -124,7 +127,51 @@ def patch_sources(source, repo):
     local=(repo/name).read_text()
     block='            if admitted:'+local.split('            if admitted:',1)[1].split('            elif was_tracking',1)[0]
     files[name]=text[:begin]+block+text[end:]
-    # Check every anchor before writing. Only these six paths are modified.
+    # Bracket policy: BBOS poses stay live; PGO never rewrites stored samples.
+    name='scripts/bracketbot_capture.py';text=files[name];local=(repo/name).read_text()
+    begin=text.index('class PoseGate:');end=text.index('POSE_HISTORY_DTYPE =',begin)
+    files[name]=text[:begin]+local[local.index('class PoseGate:'):local.index('POSE_HISTORY_DTYPE =')]+text[end:]
+    name='src/local_mapper.rs';text=files[name]
+    guard='                if self.frame.starts_with(&format!("{BRACKETBOT_FAMILY}:"))'
+    for header,body in [
+        ('            SensorEvent::CorrectionPending { pgo_count, .. } => {',' { return Ok(()); }'),
+        ('            SensorEvent::TrajectoryCorrection { timestamp_ns, pgo_count, pose, corrected_portals, corrected_depth } => {',' {\n                    return self.accept(SensorEvent::Odometry{timestamp_ns,pose});\n                }'),
+        ('            SensorEvent::MapCorrection { timestamp_ns, pgo_count, pose } => {',' {\n                    return self.accept(SensorEvent::Odometry{timestamp_ns,pose});\n                }')]:
+        if header+'\n'+guard not in text: text=once(text,header,header+'\n'+guard+body)
+    if 'if !self.frame.starts_with(&format!("{BRACKETBOT_FAMILY}:")) {\n        self.retained_depth.push(' not in text:
+        text=once(text,'        self.retained_depth.push(','        if !self.frame.starts_with(&format!("{BRACKETBOT_FAMILY}:")) {\n        self.retained_depth.push(')
+        line='        if self.retained_depth.len()>2048 { self.retained_depth.drain(..self.retained_depth.len()-2048); }'
+        text=once(text,line,line+'\n        }')
+    files[name]=text
+    name='src/robot_live.rs';text=files[name]
+    header='            SensorEvent::CorrectionPending { timestamp_ns, .. } => {'
+    if header+'\n                if self.preserves_frame' not in text: text=once(text,header,header+'\n                if self.preserves_frame { return; }')
+    header='            SensorEvent::MapCorrection { timestamp_ns, pose, .. } | SensorEvent::TrajectoryCorrection { timestamp_ns, pose, .. } => {'
+    if header+'\n                if self.preserves_frame' not in text:
+        text=once(text,header,header+'\n                if self.preserves_frame {\n                    self.accept(&SensorEvent::Odometry{timestamp_ns:*timestamp_ns,pose:pose.clone()});\n                    return;\n                }')
+    text=text.replace('if alignment.is_object() && (!basis_fresh','if alignment.is_object() && !self.preserves_frame && (!basis_fresh')
+    files[name]=text
+    name='src/frame_transform.rs';text=read(name);local=(repo/name).read_text()
+    begin=text.index('        let valid =');end=text.index('        value.validity',begin)
+    files[name]=text[:begin]+local[local.index('        let valid ='):local.index('        value.validity')]+text[end:]
+    name='scripts/bracketbot_pointing.py';text=read(name);local=(repo/name).read_text()
+    if 'def point_in_frame(' not in text:
+        helper='def point_in_frame('+local.split('def point_in_frame(',1)[1].split('\n\ndef ',1)[0]+'\n\n\n'
+        text=once(text,'def select_phone(',helper+'def select_phone(') if 'def select_phone(' in text else once(text,'def select_target(',helper+'def select_target(')
+    text=text.replace("presence['frame'] == expected_home_frame","presence['frame'] in (expected_home_frame,native)")
+    text=text.replace("pose['to_frame_id'] == expected_home_frame","pose['to_frame_id'] == presence['frame']")
+    text=text.replace("inverse_point(alignment['transform'], vector(pose['translation']))","point_in_frame(pose['translation'],presence['frame'],native,alignment['transform'])")
+    files[name]=text
+    name='scripts/bracketbot_note.py';text=read(name)
+    text=text.replace('from bracketbot_pointing import fresh,inverse_point,vector\n','from bracketbot_pointing import fresh,inverse_point,vector,point_in_frame\n')
+    text=text.replace("request['frame']==home['frame']","request['frame'] in (home['frame'],scene['frame'])")
+    text=text.replace("inverse_point(scene['registries']['frame_transform']['transform'],vector(note['position']))","point_in_frame(note['position'],request['frame'],scene['frame'],scene['registries']['frame_transform']['transform'])")
+    files[name]=text
+    name='scripts/bracketbot_volume_speech.py';text=read(name);local=(repo/name).read_text()
+    text=text.replace('from bracketbot_pointing import vector, fresh\n','from bracketbot_pointing import vector, fresh, point_in_frame\n')
+    begin=text.index('def inputs(');end=text.index('\n\nclass Entries:',begin)
+    files[name]=text[:begin]+local[local.index('def inputs('):local.index('\n\nclass Entries:')]+text[end:]
+    # Check every anchor before writing; preserve all unrelated deployed code.
     for name,text in files.items(): (source/name).write_text(text)
     return list(files)
 

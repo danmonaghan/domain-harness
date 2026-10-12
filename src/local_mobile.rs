@@ -31,7 +31,7 @@ pub struct Scene {
     pub portals: MapSnapshot,
     pub geometry: Option<CanonicalScene>,
     pub notes: Notes,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", serialize_with="legacy_volume_layer")]
     pub semantic_volumes: Option<crate::semantic_volumes::Volumes>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volumes: Vec<crate::semantic_volumes::SemanticVolume>,
@@ -41,6 +41,11 @@ pub struct Scene {
 }
 impl ContractType for Scene {
     const DATATYPE: &'static str = SCHEMA;
+}
+fn legacy_volume_layer<S:serde::Serializer>(volumes:&Option<crate::semantic_volumes::Volumes>,s:S)->std::result::Result<S::Ok,S::Error> {
+    let mut value=serde_json::to_value(volumes).map_err(serde::ser::Error::custom)?;
+    if let Some(items)=value["items"].as_array_mut() { for item in items { item.as_object_mut().unwrap().remove("semantic_type"); } }
+    value.serialize(s)
 }
 fn size(s: &Scene) -> usize {
     serde_json::to_vec(s).map_or(usize::MAX, |v| v.len())
@@ -105,11 +110,15 @@ impl Scene {
         };
         view["notes"] = json!(self.notes.items);
         view["volumes"] = json!(self.volumes);
-        view["semantic_volumes"] = serde_json::to_value(self.semantic_volumes.clone().unwrap_or_else(|| {
+        let mut collection=self.semantic_volumes.clone().unwrap_or_else(|| {
             let mut collection=crate::semantic_volumes::Volumes::empty(&self.portals.scenegraph.map.frame.id);
             collection.items=self.volumes.iter().map(|v|crate::semantic_volumes::Volume::from_mobile(v,None)).collect();
             collection
-        }))?;
+        });
+        for volume in &mut collection.items {
+            if let Some(mobile)=self.volumes.iter().find(|v|v.id==volume.id) { volume.semantic_type=mobile.semantic_type.clone(); }
+        }
+        view["semantic_volumes"] = serde_json::to_value(collection)?;
         crate::mobile_pose::append_labels_in_frame(&mut view, &self.presence, &map.frame.id);
         crate::robot_presence::append_labels(&mut view, &self.robot_presence, &map.frame.id);
         view["environment_name"] = json!(map.name);

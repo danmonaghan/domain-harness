@@ -33,6 +33,7 @@ def main():
         behavior = None
         drive = None
         speech = None
+        tracking_led = None
         def heartbeat(running):
             tmp = args.state/'supervisor-live.tmp'
             tmp.write_text(json.dumps(dict(pid=os.getpid(), updated_ns=time.time_ns(), running=running)))
@@ -44,11 +45,14 @@ def main():
             if behavior and behavior.poll() is None: behavior.terminate()
             if drive and drive.poll() is None: drive.terminate()
             if speech and speech.poll() is None: speech.terminate()
+            if tracking_led and tracking_led.poll() is None: tracking_led.terminate()
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
         failures = 0
         try:
             heartbeat(False)
+            tracking_led = subprocess.Popen([sys.executable,str(Path(__file__).with_name('bracketbot-python.py')),
+                str(Path(__file__).with_name('bracketbot_tracking_led.py')),'--state',str(args.state)],stdin=subprocess.DEVNULL)
             behavior_args = [sys.executable, str(Path(__file__).with_name('control-bracketbot-behavior.py')),
                              '--state', str(args.state), '--supervisor-pid', str(os.getpid())]
             if args.execute_portal_search: behavior_args.append('--execute-search')
@@ -92,6 +96,11 @@ def main():
                 while not stopped and time.monotonic() < until: time.sleep(.25)
         finally:
             heartbeat(False)
+            if tracking_led and tracking_led.poll() is None:
+                tracking_led.terminate()
+                try: tracking_led.wait(timeout=4)
+                except subprocess.TimeoutExpired:
+                    tracking_led.kill(); tracking_led.wait()
             if speech and speech.poll() is None:
                 speech.terminate()
                 try: speech.wait(timeout=4)

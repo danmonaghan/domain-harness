@@ -52,6 +52,7 @@ def main():
     ap.add_argument('--state', required=True, type=Path)
     args = ap.parse_args()
     state = args.state
+    supervisor=(state/'runner.pid').read_text().strip()
     stopped = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM): signal.signal(sig, lambda *_: stopped.set())
     backend = shutil.which('espeak-ng') or shutil.which('espeak')
@@ -84,6 +85,8 @@ def main():
         else: backend = None
         try:
             while not stopped.is_set():
+                if not (Path('/proc')/supervisor).exists() or not (state/'runner.pid').exists() or (state/'runner.pid').read_text().strip()!=supervisor:
+                    break
                 valid = None
                 scope = entries.scope
                 try:
@@ -91,7 +94,7 @@ def main():
                     scope = (profile['peer_id'], profile['frame'], profile['product_id'])
                     control = state/'robot-control.json'
                     valid = inputs(read(control), read(state/'semantic-volumes.json'), profile,
-                                   now_ns=time.time_ns(), capture_now_ns=time.monotonic_ns(),
+                                   now_ns=time.time_ns(), capture_now_ns=time.time_ns(),
                                    scene_age_ms=(time.time_ns()-control.stat().st_mtime_ns)/1e6)
                     announcements = entries.update(*(valid or (None, None)), time.monotonic(), scope)
                 except (OSError, KeyError, ValueError, TypeError):

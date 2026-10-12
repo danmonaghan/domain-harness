@@ -74,28 +74,9 @@ def acquire(Reader, mailbox, emit, stopped, parent):
             mailbox.update_pose(gate, admitted, latest_health)
             if admitted:
                 t, pose = admitted
-                emitted_correction_at=0
-                if gate.correction:
-                    pending_correction=gate.correction
-                    emit(dict(kind='correction_pending',timestamp_ns=t,pgo_count=gate.pgo_count))
-                if pending_correction:
-                    context=json.loads(os.environ.get('SPATIAL_CAPTURE_CONTEXT','{}'))
-                    root=Path(os.environ.get('BBOS_ROOT','/home/bracketbot/bbos'))
-                    correction=trajectory_correction(pending_correction,context.get('control_state_path',''),
-                        root/'bbos/daemons/slam/.maps/slam.poses')
-                    if correction.get('history_ready'):
-                        # History arrives asynchronously. A tracking-loss update
-                        # may already be newer than the original PGO notification.
-                        # Publish the correction at this fresh, corrected live pose.
-                        correction.update(timestamp_ns=t,pose=pose)
-                        print(f"PGO {gate.pgo_count}: replay {len(correction['corrected_depth'])} depth captures",file=sys.stderr,flush=True)
-                        emit(correction);emitted_correction_at=correction['timestamp_ns'];pending_correction=None
-                    else:
-                        mailbox.pause_for_correction(t)
-                if pending_correction is None and t>emitted_correction_at:
-                    emit(dict(kind='odometry',timestamp_ns=t,pose=pose))
+                emit(dict(kind='odometry',timestamp_ns=t,pose=pose))
             elif was_tracking and not gate.tracking and gate.last_timestamp:
-                emit(dict(kind='tracking_lost', timestamp_ns=gate.last_timestamp+1))
+                emit(dict(kind='tracking_lost',timestamp_ns=gate.last_timestamp+1))
             stopped.wait(.015)
 
 

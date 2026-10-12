@@ -21,7 +21,10 @@ pub struct Sample {
 pub struct Update { pub sample: Option<Sample> }
 impl ContractType for Update { const DATATYPE: &'static str = "spatial.robot-presence/v1"; }
 #[derive(Default)]
-pub struct Presence { entries: BTreeMap<String, (Sample, RigidTransform, Instant)> }
+pub struct Presence {
+    entries: BTreeMap<String, (Sample, RigidTransform, Instant)>,
+    relationships: BTreeMap<(String,String,String),crate::frame_transform::FrameTransform>,
+}
 impl Presence {
     pub fn accept(&mut self, peer: &str, home: &str, frame: &str, update: Update, now: Instant) -> Result<()> {
         ensure!(!peer.is_empty(), "Missing robot identity");
@@ -50,7 +53,13 @@ impl Presence {
             && old.clock == sample.clock && sample.timestamp_ns <= old.timestamp_ns { return Ok(()); }
         self.entries.retain(|_, (_,_,received)| now.duration_since(*received) < Duration::from_secs(3));
         ensure!(self.entries.len() < 64 || self.entries.contains_key(peer), "Robot presence capacity reached");
-        let composed = crate::local_mapper::compose(&crate::local_mapper::from_rigid(t),
+        let key=(peer.to_owned(),sample.native_pose.to_frame_id.clone(),serde_json::to_string(&sample.clock)?);
+        ensure!(self.relationships.contains_key(&key)||self.relationships.len()<256,"Too many native relationships");
+        if self.relationships.get(&key).is_none_or(|old|old.evidence.as_ref().is_none_or(|e|e.capture_timestamp_ns<evidence.capture_timestamp_ns)) {
+            self.relationships.insert(key.clone(),a.clone());
+        }
+        let retained=self.relationships[&key].transform.as_ref().unwrap();
+        let composed = crate::local_mapper::compose(&crate::local_mapper::from_rigid(retained),
             &crate::local_mapper::from_rigid(&sample.native_pose))?;
         let pose = crate::local_mapper::rigid(&composed, "robot.base", frame);
         self.entries.insert(peer.into(), (sample, pose, now));
@@ -62,7 +71,7 @@ impl Presence {
             json!({"peer_id":peer,"name":s.name,"pose":pose,"native_pose":s.native_pose,
                 "clock":s.clock,"capture_timestamp_ns":s.timestamp_ns,
                 "received_age_ms":now.duration_since(*received).as_millis()})).collect();
-        json!({"frame":frame,"poses":poses})
+        json!({"frame":frame,"poses":poses,"transforms":self.relationships.values().collect::<Vec<_>>()})
     }
 }
 pub fn append_labels(view: &mut Value, presence: &Value, frame: &str) {

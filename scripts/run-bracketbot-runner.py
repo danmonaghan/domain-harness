@@ -49,6 +49,7 @@ config=request['peer']; config['identity_file']=str(state/'peer.identity')
 (state/'home-connection.json').write_text(json.dumps(home,indent=2)+'\n')
 (state/'connection.json').unlink(missing_ok=True)
 env=os.environ.copy(); env.update(request['credentials'])
+env['SPATIAL_ROBOT_NAME']=request.get('robot_name','Bracketbot')
 env['SPATIAL_HOME_CONNECTION']=str(state/'home-connection.json')
 env.pop('SPATIAL_DRIVE_PEER',None)
 drive=request.get('drive_peer')
@@ -79,6 +80,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--robot', default='0184', help='bb robot ID')
     ap.add_argument('--root', default='/home/bracketbot/deployments/domain-harness/runner')
+    ap.add_argument('--robot-name', help='Display name published to Home')
     ap.add_argument('--peer-config', type=Path, default=Path('config/bracketbot-0184.peer.json'))
     ap.add_argument('--home-connection', type=Path)
     ap.add_argument('--restart', action='store_true')
@@ -95,6 +97,7 @@ def main():
     names = ('AUKI_ACCESS_KEY', 'AUKI_APP_SECRET') if peer['login'] == 'app' else ('AUKI_EMAIL', 'AUKI_PASSWORD')
     if not all(os.environ.get(name) for name in names): ap.error('Supply authentication through the environment or with-home-credentials.py')
     payload = dict(root=args.root, peer=peer, restart=args.restart,
+                   robot_name=args.robot_name or f'Bracketbot {args.robot}',
                    execute_portal_search=args.execute_portal_search,
                    execute_phone_reach=args.execute_phone_reach,
                    drive_peer=args.drive_peer if args.execute_phone_drive else None,

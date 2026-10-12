@@ -743,10 +743,14 @@ impl LocalMap {
     pub fn accept(&mut self, event: SensorEvent) -> Result<()> {
         match event {
             SensorEvent::CorrectionPending { pgo_count, .. } => {
+                if self.frame.starts_with(&format!("{BRACKETBOT_FAMILY}:")) { return Ok(()); }
                 self.pending.clear();self.localized_scans.clear();self.latest_pose=None;
                 self.detail=format!("PGO {pgo_count} · waiting for optimized history; geometry retained");
             }
             SensorEvent::TrajectoryCorrection { timestamp_ns, pgo_count, pose, corrected_portals, corrected_depth } => {
+                if self.frame.starts_with(&format!("{BRACKETBOT_FAMILY}:")) {
+                    return self.accept(SensorEvent::Odometry{timestamp_ns,pose});
+                }
                 ensure!(corrected_portals.len() <= 256, "Correction landmark limit");
                 ensure!(corrected_depth.len() <= 2048, "Correction depth history limit");
                 let retained = std::mem::take(&mut self.retained_depth);
@@ -784,6 +788,9 @@ impl LocalMap {
                 self.rebuild_depth(retained, &corrected_depth, count)?;
             }
             SensorEvent::MapCorrection { timestamp_ns, pgo_count, pose } => {
+                if self.frame.starts_with(&format!("{BRACKETBOT_FAMILY}:")) {
+                    return self.accept(SensorEvent::Odometry{timestamp_ns,pose});
+                }
                 pose.validate()?;
                 ensure!(timestamp_ns > 0 && self.correction.is_none_or(|(t,_)| timestamp_ns > t), "out-of-order map correction");
                 self.pending.clear();
@@ -1572,10 +1579,12 @@ impl LocalMap {
         saved.accumulator()?;
         self.voxels = Some(saved);
         self.recent_voxels = recent;
+        if !self.frame.starts_with(&format!("{BRACKETBOT_FAMILY}:")) {
         self.retained_depth.push(RetainedDepth { observation,colors,base_pose:base.clone(),sensor_to_base:sensor_base.clone() });
         let needed = self.recent_voxels.needed_timestamps();
         self.retained_depth.retain(|d|needed.contains(&d.observation.timestamp_ns));
         if self.retained_depth.len()>2048 { self.retained_depth.drain(..self.retained_depth.len()-2048); }
+        }
         self.last_integration = Some(std::time::Instant::now());
 
         Ok(())

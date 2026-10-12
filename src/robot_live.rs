@@ -20,6 +20,7 @@ impl LiveState {
     pub fn accept(&mut self, event: &SensorEvent) {
         match event {
             SensorEvent::CorrectionPending { timestamp_ns, .. } => {
+                if self.preserves_frame { return; }
                 self.barrier=self.barrier.max(*timestamp_ns);self.correction=self.correction.max(*timestamp_ns);self.latest=None;
             }
             SensorEvent::TrackingLost { timestamp_ns } => {
@@ -28,6 +29,10 @@ impl LiveState {
                 self.latest = None;
             }
             SensorEvent::MapCorrection { timestamp_ns, pose, .. } | SensorEvent::TrajectoryCorrection { timestamp_ns, pose, .. } => {
+                if self.preserves_frame {
+                    self.accept(&SensorEvent::Odometry{timestamp_ns:*timestamp_ns,pose:pose.clone()});
+                    return;
+                }
                 self.barrier = self.barrier.max(*timestamp_ns);
                 self.correction = self.correction.max(*timestamp_ns);
                 self.latest = pose.validate().ok().map(|_| (*timestamp_ns, pose.clone()));
@@ -72,7 +77,7 @@ impl LiveState {
         let reprojected = m["map_correction"]["alignment_reprojected"] == true
             && m["map_correction"]["capture_timestamp_ns"].as_u64().unwrap_or(0) >= self.barrier;
         let alignment = &mut value["registries"]["frame_transform"];
-        if alignment.is_object() && (!basis_fresh || !correction_applied || self.latest.is_none()
+        if alignment.is_object() && !self.preserves_frame && (!basis_fresh || !correction_applied || self.latest.is_none()
             || (alignment["evidence"]["capture_timestamp_ns"].as_u64().unwrap_or(0) <= self.barrier
                 && !reprojected))
         {
@@ -128,7 +133,7 @@ mod tests {
     }
     #[test]
     fn corrected_history_restores_alignment_only_after_mapper_applies_it() {
-        let mut s=state(); s.preserves_frame=true;
+        let mut s=state();
         s.accept(&SensorEvent::TrajectoryCorrection{timestamp_ns:21,pgo_count:2,pose:identity(),corrected_portals:Default::default(),corrected_depth:Default::default()});
         assert_eq!(s.snapshot().unwrap()["registries"]["frame_transform"]["validity"],"stale");
         s.basis.as_mut().unwrap().0["registries"]["local_mapping"]["map_correction"]=json!({"capture_timestamp_ns":21,"alignment_reprojected":true});
@@ -139,15 +144,15 @@ mod tests {
         assert_eq!(s.snapshot().unwrap()["registries"]["frame_transform"]["validity"],"stale");
     }
     #[test]
-    fn bbos_tracking_recovery_resumes_same_frame_but_correction_still_invalidates() {
+    fn bbos_tracking_and_pgo_preserve_the_frame_relationship() {
         let mut s=state();s.preserves_frame=true;
         s.accept(&SensorEvent::TrackingLost{timestamp_ns:21});
-        assert_eq!(s.snapshot().unwrap()["registries"]["frame_transform"]["validity"],"stale");
+        assert_eq!(s.snapshot().unwrap()["registries"]["frame_transform"]["validity"],"valid");
         s.accept(&SensorEvent::Odometry{timestamp_ns:20,pose:identity()});
         assert!(s.snapshot().unwrap()["registries"]["local_mapping"]["robot_pose"].is_null());
         s.accept(&SensorEvent::Odometry{timestamp_ns:30,pose:identity()});
         assert_eq!(s.snapshot().unwrap()["registries"]["frame_transform"]["validity"],"valid");
         s.accept(&SensorEvent::MapCorrection{timestamp_ns:40,pgo_count:1,pose:identity()});
-        assert_eq!(s.snapshot().unwrap()["registries"]["frame_transform"]["validity"],"stale");
+        assert_eq!(s.snapshot().unwrap()["registries"]["frame_transform"]["validity"],"valid");
     }
 }

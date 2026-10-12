@@ -1,7 +1,7 @@
 """Pure volume-entry policy. No network, audio or motor operations."""
 import math
 from bracketbot_behavior import alignment_valid
-from bracketbot_pointing import vector, fresh
+from bracketbot_pointing import vector, fresh, point_in_frame
 
 
 def transform_point(pose, point):
@@ -47,10 +47,10 @@ def inputs(scene, packet, profile, *, now_ns, capture_now_ns, scene_age_ms):
             return None
         volumes = packet['volumes']
         if volumes is None: return (None, [])
-        if volumes['schema'] != 'spatial-harness.semantic-volumes/v1' or volumes['frame'] != frame:
+        if volumes['schema'] != 'spatial-harness.semantic-volumes/v1' or volumes['frame'] not in (frame,scene['frame']):
             return None
-        point = transform_point(scene['registries']['frame_transform']['transform'],
-                                robot['pose']['translation'])
+        # Compare in the collection's declared frame, never assume Home space.
+        point = point_in_frame(robot['pose']['translation'],scene['frame'],volumes['frame'],scene['registries']['frame_transform']['transform'])
         return point, volumes['items']
     except (KeyError, TypeError, ValueError, OverflowError):
         return None

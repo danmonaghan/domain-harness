@@ -1,0 +1,12 @@
+{
+  "domain_id": "b2881524-954d-4979-b715-240ed8f02807",
+  "api_url": "https://api.dev.aukiverse.com/",
+  "dds_url": "https://dds.dev.aukiverse.com/",
+  "dms_url": "https://dms.dev.aukiverse.com/v1/",
+  "login": "app",
+  "identity_file": "../data/bracketbot-182.identity",
+  "listen": ["/ip4/0.0.0.0/tcp/4321"],
+  "advertise": ["/ip4/192.168.1.231/tcp/4321"],
+  "relay": false,
+  "advertise_discovery": true
+}

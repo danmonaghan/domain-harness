@@ -189,9 +189,8 @@ class PoseGate:
         if t == self.last_timestamp:
             return None
         result = pose(record)
-        if self.pgo_count is not None and pgo != self.pgo_count:
-            self.correction = dict(kind='map_correction', timestamp_ns=t,
-                                   pgo_count=pgo, pose=result)
+        # Ordinary PGO is part of BBOS's live pose stream, not a reset of our
+        # frame or a request to rewrite previously posed measurements.
         self.pgo_count = pgo
         self.tracking = True
         self.last_timestamp = t

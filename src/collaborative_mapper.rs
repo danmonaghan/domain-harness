@@ -38,6 +38,9 @@ pub struct CollaborativeMap {
     recent: crate::recent_voxels::RecentVoxels,
     watermarks: BTreeMap<String, (u64, u64)>,
     contributions: BTreeMap<String, u64>,
+    /// Last validated relationship per peer/native frame/clock session. Never
+    /// expires merely because a portal leaves view; no past scan is replayed.
+    native_alignments: BTreeMap<(String,String,String), crate::scene_contribution::Contribution>,
     peers: BTreeMap<String, Value>,
     input_registries: BTreeMap<String, Value>,
     landmark_provenance: BTreeMap<String, crate::landmarks::Provenance>,
@@ -133,6 +136,7 @@ impl CollaborativeMap {
             recent: Default::default(),
             watermarks: BTreeMap::new(),
             contributions: BTreeMap::new(),
+            native_alignments: BTreeMap::new(),
             peers: BTreeMap::new(),
             input_registries: BTreeMap::new(),
             landmark_provenance: BTreeMap::new(),
@@ -325,12 +329,27 @@ impl CollaborativeMap {
         }
         Ok(accepted)
     }
-    pub fn integrate_contribution(&mut self, contribution: crate::scene_contribution::Contribution) -> Result<bool> {
+    pub fn integrate_contribution(&mut self, mut contribution: crate::scene_contribution::Contribution) -> Result<bool> {
+        contribution.validate(&contribution.source.peer_id,&self.reference)?;
+        let key=(contribution.source.peer_id.clone(),contribution.native_frame.frame_id.clone(),contribution.clock.session_id.clone());
+        ensure!(self.native_alignments.contains_key(&key)||self.native_alignments.len()<256,"Too many native frame relationships");
+        if let Some(saved)=self.native_alignments.get(&key)
+            && saved.alignment_timestamp_ns>=contribution.alignment_timestamp_ns {
+            contribution.native_to_scene=saved.native_to_scene.clone();
+            contribution.portal_to_native=saved.portal_to_native.clone();
+            contribution.portal_id=saved.portal_id.clone();
+            contribution.alignment_timestamp_ns=saved.alignment_timestamp_ns;
+        }
         let peer = contribution.source.peer_id.clone();
         let provenance = serde_json::to_value(&contribution)?;
+        let points=std::mem::take(&mut contribution.points);
+        let colors=std::mem::take(&mut contribution.colors);
+        let relationship=contribution.clone();
+        contribution.points=points;contribution.colors=colors;
         let scan = contribution.localize(&self.reference, self.map.snapshot_reference())?;
         let accepted = self.integrate(scan)?;
         if accepted {
+            self.native_alignments.insert(key,relationship);
             self.input_registries.insert(format!("peer:{peer}"), provenance);
             self.peer_status(&peer, "aligned", "Scene contribution · native measurements and separate alignment");
         }

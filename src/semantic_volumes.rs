@@ -83,7 +83,7 @@ pub struct SemanticVolume {
     pub dimensions: [f64; 3],
     pub yaw: f64,
     // Older iPhone clients omit this. Preserve the saved description on edits.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing)]
     pub description: Option<String>,
 }
 impl SemanticVolume {

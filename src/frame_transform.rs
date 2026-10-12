@@ -101,7 +101,8 @@ impl FrameTransform {
             reference_anchor: reference.clone(),
         });
         let valid =
-            local.latest_pose.is_some() && local.alignment_after_ns.is_none_or(|t| timestamp > t);
+            (local.latest_pose.is_some() || local.frame.starts_with(&format!("{}:",crate::local_mapper::BRACKETBOT_FAMILY)))
+                && local.alignment_after_ns.is_none_or(|t| timestamp > t);
         value.validity = if valid {
             Validity::Valid
         } else {
