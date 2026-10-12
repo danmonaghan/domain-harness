@@ -5,6 +5,7 @@ import base64
 import contextlib
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -30,6 +31,15 @@ def acquire(Reader, mailbox, emit, stopped, parent):
     topics = ['slam.health', 'slam.pose', 'camera.head.jpeg', 'camera.points',
               'camera.left.jpeg', 'camera.right.jpeg']
     with contextlib.ExitStack() as stack:
+        # Wheel positions tell a restarted mapper whether the robot stood still.
+        # Optional: the base daemon may restart or be absent without ending capture.
+        wheels = last_wheels = None
+        try:
+            wheels = Reader('drive.state', keeptime=False)
+            wheels.__enter__()
+            stack.callback(wheels.__exit__, None, None, None)
+        except Exception:
+            wheels = None
         readers = {}
         for name in topics:
             reader = Reader(name, keeptime=False)
@@ -75,6 +85,14 @@ def acquire(Reader, mailbox, emit, stopped, parent):
             if admitted:
                 t, pose = admitted
                 emit(dict(kind='odometry',timestamp_ns=t,pose=pose))
+                try:
+                    if wheels is not None and wheels.ready() and t-(last_wheels or 0) >= 250_000_000:
+                        positions = [float(v) for v in wheels.data['pos']]
+                        if all(math.isfinite(v) for v in positions):
+                            emit(dict(kind='wheels', positions=positions))
+                            last_wheels = t
+                except Exception:
+                    wheels = None
             elif was_tracking and not gate.tracking and gate.last_timestamp:
                 emit(dict(kind='tracking_lost',timestamp_ns=gate.last_timestamp+1))
             stopped.wait(.015)
@@ -90,6 +108,9 @@ def main():
     from bbos import Config, Reader
     cv2.setNumThreads(1)
     context = json.loads(os.environ['SPATIAL_CAPTURE_CONTEXT'])
+    # A robot that also runs navigation can trade preview and scan rate for CPU.
+    preview_interval_ns = max(100, int(os.environ.get('SPATIAL_PREVIEW_INTERVAL_MS', '200')))*1_000_000
+    scan_interval = max(100, int(os.environ.get('SPATIAL_SCAN_INTERVAL_MS', '500')))/1000
     cfg = Config('depth')
     if getattr(cfg, 'imu_pitch', 0):
         raise ValueError('Dynamic depth extrinsics require a capture-time transform stream')
@@ -172,7 +193,7 @@ def main():
         while not stopped.is_set() and os.getppid() == parent:
             monotonic = time.monotonic()
             if args.seconds and monotonic-started >= args.seconds: break
-            if monotonic-last_mapping >= .5:
+            if monotonic-last_mapping >= scan_interval:
                 pair = mailbox.take_scan(last_image, time.time_ns())
                 if pair:
                     t, raw, (points, colors) = pair
@@ -194,10 +215,10 @@ def main():
             for name, (t, raw) in state['previews'].items():
                 if not -100_000_000 <= time.time_ns()-t <= MAX_CAMERA_AGE_NS: continue
                 if name != 'camera.head':
-                    if t-wrist_preview.get(name, 0) >= 200_000_000:
+                    if t-wrist_preview.get(name, 0) >= preview_interval_ns:
                         sample(name, t, raw=raw)
                         wrist_preview[name] = t
-                elif t-last_preview >= 200_000_000:
+                elif t-last_preview >= preview_interval_ns:
                     full = decode(raw)
                     for index, (camera_id, _, eye_calibration) in enumerate(eyes):
                         image = rectify(full, right=index == 1)

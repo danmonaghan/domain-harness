@@ -69,6 +69,11 @@ pub async fn run(hardware: Hardware) -> Result<()> {
     if let Some(path) = std::env::var_os("SPATIAL_PORTAL_SIZES") {
         local.set_portal_sizes(crate::portal_sizes::PortalSizes::load(path)?)?;
     }
+    if hardware == Hardware::Bracketbot {
+        local.portal_memory = Some(crate::portal_memory::PortalMemory::open(
+            path.with_file_name("portal-memory.json"),
+        ));
+    }
     local.export_sources(&publisher.endpoint)?;
     local.copy_native_scans();
     let contribution_clock = crate::model::clock_entry(&owner, &session);
@@ -367,18 +372,21 @@ pub async fn run(hardware: Hardware) -> Result<()> {
                 let portals = crate::network::fetch_home_portals(&running.peer, &profile).await?;
                 Ok::<_, anyhow::Error>((profile.peer_id, portals))
             };
-            match fetch.await {
+            // Alignment waits on this reference, so a failed fetch retries soon.
+            let wait = match fetch.await {
                 Ok((peer_id, portals)) => {
                     *home_status.lock().unwrap() = serde_json::json!({"status":"received", "peer_id":peer_id,"frame":portals.scenegraph.map.frame.id});
                     let _ = home_send.try_send((peer_id, portals));
+                    30
                 }
                 Err(e) => {
                     *home_status.lock().unwrap() =
                         serde_json::json!({"status":"unavailable", "error":e.to_string()});
                     eprintln!("Home reference fetch: {e}");
+                    3
                 }
-            }
-            tokio::time::sleep(Duration::from_secs(30)).await;
+            };
+            tokio::time::sleep(Duration::from_secs(wait)).await;
         }
     };
     let volume_work = async {
@@ -398,14 +406,18 @@ pub async fn run(hardware: Hardware) -> Result<()> {
                             "robot_peer_id":owner,
                             "received_ns":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64,
                             "volumes":scene.semantic_volumes
-                        }))
+                        }))?;
+                        // One scene is enough: the stream carries the whole map every tick.
+                        cancel.cancel();
+                        Ok(())
                     }).await
             };
             if let Err(error) = work.await {
                 let _ = save(&cache, &serde_json::json!({"authenticated":false}));
                 eprintln!("Home volume subscription: {error}");
             }
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            // Volume consumers accept input up to 15 s old.
+            tokio::time::sleep(Duration::from_secs(8)).await;
         }
     };
     let phone_work = async {

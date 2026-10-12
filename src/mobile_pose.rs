@@ -281,37 +281,78 @@ pub async fn send_component<T: auki_components::ContractType + Serialize>(
     component: &str,
     update: &T,
 ) -> Result<()> {
+    invoke_pinned(peer, home, component, "update", "phone-pose", update, "Home phone presence unavailable").await?;
+    Ok(())
+}
+type Pinned = (auki_sdk::Multiaddr, auki_components::ComponentReference);
+/// Home's component references change only when Home restarts, so one catalog
+/// read serves every later call. A failed call forgets it and looks it up again.
+static PINNED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Pinned>>> =
+    std::sync::LazyLock::new(Default::default);
+pub(crate) async fn invoke_pinned<T: auki_components::ContractType + Serialize>(
+    peer: &auki_sdk::AukiPeer,
+    home: &crate::network::HomeConnection,
+    component: &str,
+    operable: &str,
+    kind: &str,
+    payload: &T,
+    unavailable: &'static str,
+) -> Result<bool> {
     use auki_component_protocol::{CatalogResponse, ComponentProtocolClient};
     let expected = home.validate(peer)?;
     let client = ComponentProtocolClient::new(peer.protocols());
-    for route in &home.routes {
-        let route: auki_sdk::Multiaddr = route.parse()?;
-        let Ok(Ok(CatalogResponse::Snapshot { snapshot })) = tokio::time::timeout(
-            Duration::from_secs(1),
-            client.catalog_exact(expected, route.clone(), None),
-        )
-        .await
-        else {
-            continue;
+    let component_id = home.scoped_component(component);
+    let key = format!("{}|{component_id}", home.peer_id);
+    for fresh in [false, true] {
+        let pinned = PINNED.lock().unwrap().get(&key).cloned().filter(|_| !fresh);
+        let (route, reference) = match pinned {
+            Some(pinned) => pinned,
+            None => {
+                let mut found = None;
+                for route in &home.routes {
+                    let route: auki_sdk::Multiaddr = route.parse()?;
+                    let Ok(Ok(CatalogResponse::Snapshot { snapshot })) = tokio::time::timeout(
+                        Duration::from_secs(1),
+                        client.catalog_exact(expected, route.clone(), None),
+                    )
+                    .await
+                    else {
+                        continue;
+                    };
+                    let entry = snapshot
+                        .components
+                        .iter()
+                        .find(|c| c.manifest.component_id == component_id)
+                        .ok_or_else(|| anyhow::anyhow!(unavailable))?;
+                    found = Some((route, entry.manifest.reference()));
+                    break;
+                }
+                let found = found.ok_or_else(|| anyhow::anyhow!(unavailable))?;
+                PINNED.lock().unwrap().insert(key.clone(), found.clone());
+                found
+            }
         };
-        let entry = snapshot
-            .components
-            .iter()
-            .find(|c| c.manifest.component_id == home.scoped_component(component))
-            .ok_or_else(|| anyhow::anyhow!("Home phone presence unavailable"))?;
-        client
+        match client
             .invoke_exact::<_, bool>(
                 expected,
                 route,
-                entry.manifest.reference(),
-                "update",
-                "phone-pose",
+                reference,
+                operable,
+                kind,
                 uuid::Uuid::new_v4().to_string(),
                 Some(Duration::from_secs(1)),
-                update,
+                payload,
             )
-            .await?;
-        return Ok(());
+            .await
+        {
+            Ok(done) => return Ok(done.result),
+            Err(error) => {
+                PINNED.lock().unwrap().remove(&key);
+                if fresh {
+                    return Err(error.into());
+                }
+            }
+        }
     }
-    anyhow::bail!("Home phone presence unavailable")
+    unreachable!("the second attempt returns")
 }

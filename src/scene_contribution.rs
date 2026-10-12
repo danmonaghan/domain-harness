@@ -233,37 +233,6 @@ pub async fn send(
     home: &crate::network::HomeConnection,
     c: &Contribution,
 ) -> Result<bool> {
-    use auki_component_protocol::{CatalogResponse, ComponentProtocolClient};
-    let expected = home.validate(peer)?;
-    let client = ComponentProtocolClient::new(peer.protocols());
-    for route in &home.routes {
-        let route: auki_sdk::Multiaddr = route.parse()?;
-        let Ok(Ok(CatalogResponse::Snapshot { snapshot })) = tokio::time::timeout(
-            Duration::from_secs(1),
-            client.catalog_exact(expected, route.clone(), None),
-        )
-        .await
-        else {
-            continue;
-        };
-        let component = snapshot
-            .components
-            .iter()
-            .find(|c| c.manifest.component_id == home.scoped_component(COMPONENT))
-            .ok_or_else(|| anyhow::anyhow!("Scene contribution receiver unavailable"))?;
-        return Ok(client
-            .invoke_exact::<_, bool>(
-                expected,
-                route,
-                component.manifest.reference(),
-                "ingest",
-                "scene-contribution",
-                uuid::Uuid::new_v4().to_string(),
-                Some(Duration::from_secs(1)),
-                c,
-            )
-            .await?
-            .result);
-    }
-    anyhow::bail!("Scene contribution receiver unreachable")
+    crate::mobile_pose::invoke_pinned(peer, home, COMPONENT, "ingest", "scene-contribution", c,
+        "Scene contribution receiver unreachable").await
 }

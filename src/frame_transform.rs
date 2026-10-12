@@ -108,7 +108,9 @@ impl FrameTransform {
         } else {
             Validity::Stale
         };
-        value.reason = if valid {
+        value.reason = if valid && evidence["restored_from_memory"] == true {
+            "Remembered shared portal in the saved SLAM map; robot frame unchanged"
+        } else if valid {
             "Measured shared portal; robot frame unchanged"
         } else if local.frame.starts_with(&format!("{}:", crate::local_mapper::BRACKETBOT_FAMILY)) {
             "Tracking unavailable; waiting for a valid pose in the same map frame"

@@ -78,6 +78,8 @@ pub enum SensorEvent {
         corrected_depth: BTreeMap<u64, Pose>,
     },
     CorrectionPending { timestamp_ns:u64, pgo_count:i64 },
+    /// Per-wheel positions from the motor controller, in turns.
+    Wheels { positions: [f64; 2] },
     Camera {
         sample: CameraSample,
     },
@@ -232,6 +234,8 @@ pub struct LocalMap {
 
     pub home_portals: Option<crate::home_alignment::HomePortals>,
     pub(crate) alignment_after_ns: Option<u64>,
+    pub portal_memory: Option<crate::portal_memory::PortalMemory>,
+    wheels: Option<[f64; 2]>,
     pub origin: Option<Origin>,
     pub detail: String,
     owner: String,
@@ -558,6 +562,8 @@ impl LocalMap {
 
             home_portals: None,
             alignment_after_ns: None,
+            portal_memory: None,
+            wheels: None,
             origin: None,
             detail: if portal_origin {
                 "Waiting for UCOF1J40N7O in raw camera observations"
@@ -847,6 +853,10 @@ impl LocalMap {
                 }
             }
             SensorEvent::Status { detail } => self.detail = detail,
+            SensorEvent::Wheels { positions } => {
+                ensure!(positions.iter().all(|turns| turns.is_finite()), "invalid wheel positions");
+                self.wheels = Some(positions);
+            }
             event => {
                 let t = match &event {
                     SensorEvent::Camera { sample } => sample.timestamp_ns,
@@ -1054,6 +1064,30 @@ impl LocalMap {
             }
         }
         Ok(())
+    }
+    /// Keep every measured portal in SLAM map coordinates for the next run.
+    fn remember_portals(&mut self, standing: Option<crate::portal_memory::Standing>) -> Result<()> {
+        let (Some(_), Some(origin)) = (&self.portal_memory, &self.origin) else {
+            return Ok(());
+        };
+        let to_odometry = inverse(&origin.odometry_to_local)?;
+        let anchors = self.portals()?.scenegraph.anchors;
+        let mut portals = BTreeMap::new();
+        for (short, evidence) in &self.evidence {
+            let (Some(anchor), Ok(measured)) = (
+                anchors.get(short),
+                serde_json::from_value::<Pose>(evidence["latest_measured_pose"].clone()),
+            ) else {
+                continue;
+            };
+            portals.insert(short.clone(), crate::portal_memory::Remembered {
+                payload: anchor.payload.clone(),
+                side_length_m: anchor.side_length_m,
+                marker_in_odometry: compose(&to_odometry, &measured)?,
+                reprojection_rms_px: evidence["reprojection_rms_px"].clone(),
+            });
+        }
+        self.portal_memory.as_mut().unwrap().remember(portals, standing)
     }
     fn camera(&mut self, s: &CameraSample, base: &Pose, sequence: u64) -> Result<()> {
         ensure!(
@@ -1370,6 +1404,56 @@ impl LocalMap {
             self.evidence.insert(short.into(),json!({"observations":n,"capture_timestamp_ns":s.timestamp_ns,"clock":self.clock,"camera_product":camera_product,"reprojection_rms_px":estimate.reprojection_rms_px,"latest_measured_pose":measured,"base_odometry_pose":base,"provenance":provenance}));
             accepted += 1;
             channel.scan_status["mapped_portals"] = json!(accepted);
+        }
+        // A runner restarted in the same SLAM map already knows where its portals are.
+        let mut restored = 0;
+        if self.evidence.is_empty()
+            && let Some(origin) = self.origin.as_ref().map(|o| o.odometry_to_local.clone())
+            && let Some(memory) = self.portal_memory.as_mut()
+        {
+            let standing = self.wheels.map(|wheels| crate::portal_memory::Standing::now(base.clone(), wheels));
+            for (short, remembered) in memory.restore(standing.as_ref()) {
+                if remembered.marker_in_odometry.validate().is_err()
+                    || !self.sizes.encoded_size_m(&short)?
+                        .is_some_and(|size| (size - remembered.side_length_m).abs() < 1e-8)
+                {
+                    continue;
+                }
+                let measured = compose(&origin, &remembered.marker_in_odometry)?;
+                let anchor = QrAnchor {
+                    anchor_id: short.clone(),
+                    payload: remembered.payload,
+                    side_length_m: remembered.side_length_m,
+                    pose_in_map: rigid(&measured, &format!("portal-{short}"), &self.frame),
+                };
+                InMemoryTransport
+                    .invoke(
+                        self.map.upsert_qr(),
+                        InvocationContext {
+                            invocation_id: uuid::Uuid::new_v4().to_string(),
+                            caller_peer_id: self.owner.clone(),
+                            caller_component_id: "local-mapper".into(),
+                        },
+                        UpsertQr {
+                            expected_snapshot: self.map.snapshot_reference(),
+                            anchor,
+                        },
+                    )
+                    .map_err(|e| anyhow!("{e:?}"))?;
+                self.evidence.insert(short,json!({"observations":0,"restored_from_memory":true,"capture_timestamp_ns":s.timestamp_ns,"clock":self.clock,"camera_product":camera_product,"reprojection_rms_px":remembered.reprojection_rms_px,"latest_measured_pose":measured,"base_odometry_pose":base,"provenance":provenance}));
+                restored += 1;
+            }
+        }
+        let standing = self.wheels.map(|wheels| crate::portal_memory::Standing::now(base.clone(), wheels));
+        let saved = if accepted > 0 || restored > 0 {
+            self.remember_portals(standing)
+        } else if let (Some(memory), Some(standing)) = (self.portal_memory.as_mut(), standing) {
+            memory.checkpoint(standing)
+        } else {
+            Ok(())
+        };
+        if let Err(error) = saved {
+            eprintln!("Portal memory: {error:#}");
         }
         if let Some(home) = &self.home_portals
             && let Some(anchor) = self.latest_shared_portal(&home.portals)

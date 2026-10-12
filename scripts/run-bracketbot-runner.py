@@ -54,8 +54,12 @@ env['SPATIAL_HOME_CONNECTION']=str(state/'home-connection.json')
 env.pop('SPATIAL_DRIVE_PEER',None)
 drive=request.get('drive_peer')
 if drive: env['SPATIAL_DRIVE_PEER']=drive  # the runner caches only this phone's stick
+for name in ('SPATIAL_PREVIEW_INTERVAL_MS','SPATIAL_SCAN_INTERVAL_MS'):
+    env.pop(name,None)
+    if request.get('capture',{}).get(name): env[name]=str(int(request['capture'][name]))
 with (state/'supervisor.log').open('ab',buffering=0) as log:
-    child=subprocess.Popen(['/usr/bin/python3',str(source/'scripts/supervise-bracketbot.py'),
+    # Below BBOS's own daemons: a starved SLAM loses tracking, and with it the robot's pose.
+    child=subprocess.Popen(['/usr/bin/nice','-n','12','/usr/bin/python3',str(source/'scripts/supervise-bracketbot.py'),
         '--state',str(state),'--binary',str(binary)] +
         (['--execute-portal-search'] if request.get('execute_portal_search') else []) +
         (['--execute-phone-reach'] if request.get('execute_phone_reach') else []) +
@@ -90,6 +94,8 @@ def main():
     ap.add_argument('--execute-phone-drive', action='store_true', help='Let one phone drive the base with its joystick. Off on every restart unless given again.')
     ap.add_argument('--drive-peer', help='Peer ID of the only phone allowed to drive')
     ap.add_argument('--drive-fast', action='store_true', help='Full teleop speeds instead of half')
+    ap.add_argument('--preview-interval-ms', type=int, help='Camera preview period; default 200. Raise it on a robot that is short of CPU')
+    ap.add_argument('--scan-interval-ms', type=int, help='Mapping scan period; default 500')
     args = ap.parse_args()
     if not Path(args.root).is_absolute(): ap.error('--root must be absolute')
     if args.execute_phone_drive and not args.drive_peer: ap.error('--execute-phone-drive needs --drive-peer')
@@ -102,6 +108,7 @@ def main():
                    execute_phone_reach=args.execute_phone_reach,
                    drive_peer=args.drive_peer if args.execute_phone_drive else None,
                    drive_fast=args.drive_fast,
+                   capture=dict(SPATIAL_PREVIEW_INTERVAL_MS=args.preview_interval_ms, SPATIAL_SCAN_INTERVAL_MS=args.scan_interval_ms),
                    credentials={name:os.environ[name] for name in names},
                    home=json.loads(args.home_connection.read_text()) if args.home_connection else None)
     command = shlex.join(['/usr/bin/python3', '-c', REMOTE])

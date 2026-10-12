@@ -12,6 +12,7 @@ RIGHT_CAMERA_FRAME = 'bracketbot_head_right_rectified_optical'
 CALIBRATION_PREFIX = 'BBOS calibrated stereo RGB-D; sha256:'
 MAX_POINTS = 384
 MAX_AGE_NS = 800_000_000
+HOLD_NS = 4_000_000_000
 
 
 def head_camera_specs(context, width, height, eyes):
@@ -172,14 +173,20 @@ class PoseGate:
             self.tracking = False
             return None
         t, h = timestamp(record), timestamp(health)
+        # The SLAM daemon publishes this pose only when pose_valid is true.
+        # BBOS's own mapper gates on lost/localized, not degraded; retain that
+        # quality warning in status without inventing loss.
+        if bool(health['vo_lost']) or not bool(health['localized']):
+            self.tracking = False
+            return None
         if (not -100_000_000 <= now_ns-t <= MAX_AGE_NS
                 or not -100_000_000 <= now_ns-h <= MAX_AGE_NS
-                # The SLAM daemon publishes this pose only when pose_valid is
-                # true. BBOS's own mapper gates on lost/localized, not degraded;
-                # retain that quality warning in status without inventing loss.
-                or any(bool(health[key]) for key in ('vo_lost', 'stalled'))
-                or not bool(health['localized'])):
-            self.tracking = False
+                or bool(health['stalled'])):
+            # A loaded robot's SLAM skips a second now and then while it stays
+            # in the same map. Hold the last pose through that; only a long
+            # silence is a tracking loss.
+            if not -100_000_000 <= now_ns-t <= HOLD_NS:
+                self.tracking = False
             return None
         if t < self.last_timestamp:
             raise NewSessionRequired('SLAM capture clock regressed')

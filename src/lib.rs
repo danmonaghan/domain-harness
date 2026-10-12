@@ -7,6 +7,7 @@ pub mod mobile_camera;
 pub mod model;
 pub mod network;
 pub mod peer;
+pub mod portal_memory;
 pub mod portal_sizes;
 pub mod raycast;
 pub mod rgbd;
